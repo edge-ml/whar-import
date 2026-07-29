@@ -18,10 +18,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(whar_router.router)
+# Served behind nginx at /whar (nginx proxies the full path, like /ds and /ml),
+# so the app owns the /whar prefix itself.
+app.include_router(whar_router.router, prefix="/whar")
 
 
-@app.get("/health")
+@app.get("/whar/health")
 def health():
     return {"status": "ok"}
 

@@ -1,0 +1,10 @@
+# whar-datasets is consumed as-is, pinned to a commit for reproducible builds.
+# It is a public teco-kit package (hatchling); pip installs it + its heavy deps
+# (torch, playwright, dask, pyarrow, kaggle, pandas, numpy) into this isolated
+# service image. Bump the pin to take upstream fixes.
+whar-datasets @ git+https://github.com/teco-kit/whar-datasets.git@3001134
+
+# Our service (versions matched to the other edge-ml Python services).
+fastapi==0.104.1
+uvicorn==0.24.0.post1
+requests==2.31.0

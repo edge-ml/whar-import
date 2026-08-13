@@ -18,6 +18,8 @@ from whar_datasets.config.getter import (
 from whar_datasets.processing.pipeline_pre import PreProcessingPipeline
 from whar_datasets.utils.loading import load_sessions
 
+from app.progress import capture_tqdm
+
 
 def _needs_credentials(download_url) -> bool:
     """Kaggle-hosted datasets require an API token; flag them so the UI can
@@ -45,18 +47,27 @@ def list_datasets(datasets_dir: str) -> List[dict]:
     return out
 
 
-def preprocess_and_load(dataset_id: str, datasets_dir: str) -> dict:
+def preprocess_and_load(dataset_id: str, datasets_dir: str, on_tqdm=None) -> dict:
     """Download + parse the dataset (cached under datasets_dir) and return the
     raw per-session data plus the label metadata needed for conversion.
 
     Windowing output from the pipeline is ignored on purpose: edge-ml does its
     own windowing at training time, so we only need the raw sessions.
+
+    on_tqdm(desc, current, total), if given, receives live progress from the
+    library's internal counted loops (the processing phase), so the caller can
+    surface a real percentage.
     """
     ds_id = WHARDatasetID(dataset_id)
     cfg = get_dataset_cfg(ds_id, datasets_dir=datasets_dir)
     pipe = PreProcessingPipeline(cfg)
-    activity_df, session_df, _window_df = pipe.run()
-    sessions = load_sessions(Path(pipe.sessions_dir))
+    if on_tqdm is not None:
+        with capture_tqdm(on_tqdm):
+            activity_df, session_df, _window_df = pipe.run()
+            sessions = load_sessions(Path(pipe.sessions_dir))
+    else:
+        activity_df, session_df, _window_df = pipe.run()
+        sessions = load_sessions(Path(pipe.sessions_dir))
     return {
         "dataset_name": ds_id.value,
         "sessions": sessions,

@@ -15,7 +15,7 @@ from typing import Dict
 
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request
 
-from app import conversion, datasetstore_client as ds, whar
+from app import conversion, datasetstore_client as ds, progress, whar
 
 router = APIRouter()
 
@@ -51,6 +51,10 @@ def start_import(
     _jobs[job_id] = {
         "state": "queued",
         "dataset_id": dataset_id,
+        "phase": "Queued",
+        "phase_current": None,   # real count within the current processing loop
+        "phase_total": None,
+        "downloaded_bytes": 0,   # bytes written during the download phase
         "subjects_done": 0,
         "subjects_total": None,
         "created_dataset_ids": [],
@@ -71,10 +75,35 @@ def import_status(job_id: str):
 def _run_import(job_id: str, dataset_id: str, project: str, jwt: str):
     job = _jobs[job_id]
     try:
-        job["state"] = "downloading"  # whar download + parse (cached)
-        loaded = whar.preprocess_and_load(dataset_id, CACHE_DIR)
+        job["state"] = "downloading"
+        job["phase"] = "Downloading"
+
+        def on_bytes(n):
+            # only meaningful during the download phase; once processing starts
+            # the cache dir balloons with extracted files, so stop reporting.
+            if job["state"] == "downloading":
+                job["downloaded_bytes"] = n
+
+        def on_tqdm(desc, current, total):
+            # the first counted loop means download + extract are done and the
+            # library has moved on to parsing/building sessions.
+            if job["state"] == "downloading":
+                job["state"] = "processing"
+            job["phase"] = desc or "Processing"
+            job["phase_current"] = current
+            job["phase_total"] = total
+
+        watcher = progress.DownloadWatcher(CACHE_DIR, on_bytes)
+        watcher.start()
+        try:
+            loaded = whar.preprocess_and_load(dataset_id, CACHE_DIR, on_tqdm=on_tqdm)
+        finally:
+            watcher.stop()
 
         job["state"] = "converting"
+        job["phase"] = "Converting"
+        job["phase_current"] = None
+        job["phase_total"] = None
         conv = conversion.build_conversion(
             loaded["dataset_name"],
             loaded["sessions"],
@@ -86,6 +115,7 @@ def _run_import(job_id: str, dataset_id: str, project: str, jwt: str):
         job["subjects_total"] = len(subjects)
 
         job["state"] = "uploading"
+        job["phase"] = "Uploading"
         labeling_id, label_id_by_name = ds.create_activity_labeling(
             DATASET_STORE_BASE, project, jwt, conv["labeling_name"], conv["activities"]
         )
@@ -96,6 +126,7 @@ def _run_import(job_id: str, dataset_id: str, project: str, jwt: str):
             job["subjects_done"] += 1
 
         job["state"] = "done"
+        job["phase"] = "Done"
     except Exception as e:  # surface a readable reason to the poller
         job["state"] = "error"
         job["error"] = f"{type(e).__name__}: {e}"

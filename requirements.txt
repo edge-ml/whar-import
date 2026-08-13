@@ -4,7 +4,12 @@
 # service image. Bump the pin to take upstream fixes.
 whar-datasets @ git+https://github.com/teco-kit/whar-datasets.git@3001134
 
-# Our service (versions matched to the other edge-ml Python services).
-fastapi==0.104.1
-uvicorn==0.24.0.post1
-requests==2.31.0
+# Our web layer, pinned loosely with lower bounds only so pip can resolve it
+# against the modern stack whar-datasets requires (it needs requests>=2.32.5,
+# pydantic>=2.13, etc.). Older exact pins here (fastapi==0.104.1,
+# requests==2.31.0) conflicted with those and broke the image build.
+# playwright's headless browser stays (pulled in by whar-datasets, installed in
+# the Dockerfile) — some dataset downloads need it.
+fastapi>=0.115.0
+uvicorn>=0.32.0
+requests>=2.32.5

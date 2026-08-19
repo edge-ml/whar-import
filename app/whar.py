@@ -16,9 +16,31 @@ from whar_datasets.config.getter import (
     get_dataset_cfg,
 )
 from whar_datasets.processing.pipeline_pre import PreProcessingPipeline
+from whar_datasets.processing.utils.resampling import resample
 from whar_datasets.utils.loading import load_sessions
 
 from app.progress import capture_tqdm
+
+
+def _standardize_rate(sessions: dict, sampling_freq: float) -> dict:
+    """Resample every session to the dataset's configured sampling_freq, exactly
+    as the library does before windowing (resampling.py, interpolation).
+
+    load_sessions returns sessions at whatever rate the per-dataset parser
+    produced (their native rate), which is not guaranteed uniform: different
+    sessions/subjects can be recorded at different rates. Forcing them all onto a
+    single rate here means the downstream fixed-dt time axis is correct for every
+    dataset, not only the ones whose native rate already matches the config."""
+    out = {}
+    for session_id, df in sessions.items():
+        if df is None or len(df) == 0:
+            continue
+        try:
+            out[session_id] = resample(df, sampling_freq)
+        except Exception as e:  # keep the native session rather than drop the data
+            print(f"resample failed for session {session_id}, keeping native rate: {e}")
+            out[session_id] = df
+    return out
 
 
 def _needs_credentials(download_url) -> bool:
@@ -68,6 +90,9 @@ def preprocess_and_load(dataset_id: str, datasets_dir: str, on_tqdm=None) -> dic
     else:
         activity_df, session_df, _window_df = pipe.run()
         sessions = load_sessions(Path(pipe.sessions_dir))
+    # Standardize every session to one rate before the caller lays them on a
+    # single fixed-dt axis; sessions can otherwise differ in native sampling.
+    sessions = _standardize_rate(sessions, float(cfg.sampling_freq))
     return {
         "dataset_name": ds_id.value,
         "sessions": sessions,

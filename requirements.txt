@@ -1,8 +1,9 @@
 # whar-datasets is consumed as-is, pinned to a commit for reproducible builds.
-# It is a public teco-kit package (hatchling); pip installs it + its heavy deps
-# (torch, playwright, dask, pyarrow, kaggle, pandas, numpy) into this isolated
-# service image. Bump the pin to take upstream fixes.
-whar-datasets @ git+https://github.com/teco-kit/whar-datasets.git@3001134
+# It is a public teco-kit package (hatchling); pip installs it + its deps
+# (playwright, pyarrow, scipy, kaggle, pandas, numpy) into this isolated
+# service image. torch is optional since upstream cb44518 and not needed here.
+# Bump the pin to take upstream fixes.
+whar-datasets @ git+https://github.com/teco-kit/whar-datasets.git@cb445189bfb601fb3b95a0d1f47333ed1063ae34
 
 # Our web layer, pinned loosely with lower bounds only so pip can resolve it
 # against the modern stack whar-datasets requires (it needs requests>=2.32.5,

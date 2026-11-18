@@ -65,3 +65,52 @@ def test_build_conversion_per_subject():
         assert len(ts["data"]) == 20  # 12 + 8
 
     print("conversion OK: 2 subjects, per-channel timeseries, monotonic ms axis, correct intervals")
+
+
+def _two_activities():
+    channels = ["acc_x", "acc_y", "gyro_x"]
+    sessions = {0: _session(10, channels, 0), 1: _session(10, channels, 100), 2: _session(10, channels, 200)}
+    session_df = pd.DataFrame({"session_id": [0, 1, 2], "subject_id": [1, 1, 2], "activity_id": [0, 1, 1]})
+    activity_df = pd.DataFrame({"activity_id": [0, 1], "activity_name": ["still", "walking"]})
+    return sessions, session_df, activity_df
+
+
+def test_chosen_channels_and_activities():
+    sessions, session_df, activity_df = _two_activities()
+    out = build_conversion("X", sessions, session_df, activity_df, 50.0,
+                           channels=["acc_x", "gyro_x"], activities=["walking"])
+    assert out["activities"] == ["walking"]
+    assert set(out["subjects"]) == {1, 2}
+    subject = out["subjects"][1]
+    assert [ts["name"] for ts in subject["timeSeries"]] == ["acc_x", "gyro_x"]
+    # only the walking session of subject 1 (values from base 100)
+    assert subject["timeSeries"][0]["data"][0][1] == 100.0
+    assert len(subject["timeSeries"][0]["data"]) == 10
+    assert [i["activity_name"] for i in subject["intervals"]] == ["walking"]
+
+
+def test_a_subject_without_chosen_activities_is_left_out():
+    sessions, session_df, activity_df = _two_activities()
+    out = build_conversion("X", sessions, session_df, activity_df, 50.0, activities=["still"])
+    assert set(out["subjects"]) == {1}
+
+
+def test_unknown_choices_are_refused():
+    sessions, session_df, activity_df = _two_activities()
+    for kwargs in ({"channels": ["mag_x"]}, {"activities": ["flying"]}):
+        try:
+            build_conversion("X", sessions, session_df, activity_df, 50.0, **kwargs)
+        except ValueError as e:
+            assert "unknown" in str(e)
+        else:
+            raise AssertionError("accepted an unknown choice")
+
+
+def test_rates_that_do_not_divide_1000_keep_their_rate():
+    sessions, session_df, activity_df = _two_activities()
+    out = build_conversion("X", sessions, session_df, activity_df, 30.0)
+    times = [t for t, _ in out["subjects"][1]["timeSeries"][0]["data"]]
+    # 10 samples per session at 30 Hz, two sessions back to back
+    assert times[:4] == [0, 33, 67, 100]
+    assert times[10] == 333  # the second session starts one period after the first ends
+    assert out["subjects"][1]["metaData"]["sampling_freq"] == "30"

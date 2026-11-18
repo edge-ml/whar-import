@@ -1,7 +1,10 @@
 """HTTP API for importing standard WHAR datasets into edge-ml.
 
-  GET  /datasets                 -> the benchmark datasets + metadata
-  POST /import   {dataset_id}     -> start an async import job, returns {job_id}
+  GET  /datasets                 -> the benchmark datasets + metadata and the
+                                    settings that can be chosen (channels,
+                                    activities, sampling rate)
+  POST /import   {dataset_id, channels?, activities?, sampling_freq?}
+                                 -> start an async import job, returns {job_id}
   GET  /import/{job_id}/status    -> job progress
 
 The import runs in the background (download can take minutes). Job state is kept
@@ -11,7 +14,7 @@ header) is forwarded to the Dataset-store on the caller's behalf.
 import os
 import traceback
 import uuid
-from typing import Dict
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request
 
@@ -31,6 +34,47 @@ def get_datasets():
     return whar.list_datasets(CACHE_DIR)
 
 
+# A rate above this is not sensible for body-worn sensors and would only
+# multiply the data.
+MAX_SAMPLING_FREQ = 1000.0
+
+
+def resolve_options(body: dict, info: dict) -> dict:
+    """Checks the settings of an import against what the dataset offers.
+
+    `info` is whar.describe() of the dataset. Returns {channels, activities,
+    sampling_freq}; None means "all" / "the default". Raises ValueError with
+    a readable reason.
+    """
+    def chosen(field: str, available: List[str]) -> Optional[List[str]]:
+        value = body.get(field)
+        if value is None:
+            return None
+        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+            raise ValueError(f"{field} must be a list of names")
+        if not value:
+            raise ValueError(f"choose at least one of the {field}")
+        unknown = [v for v in value if v not in available]
+        if unknown:
+            raise ValueError(f"{info['id']} has no {field} {', '.join(unknown)}")
+        # all chosen: the same as no choice
+        return None if set(value) == set(available) else value
+
+    rate = body.get("sampling_freq")
+    if rate is not None:
+        try:
+            rate = float(rate)
+        except (TypeError, ValueError):
+            raise ValueError("sampling_freq must be a number")
+        if not 0 < rate <= MAX_SAMPLING_FREQ:
+            raise ValueError(f"sampling_freq must be between 0 and {MAX_SAMPLING_FREQ:g} Hz")
+    return {
+        "channels": chosen("channels", info["channels"]),
+        "activities": chosen("activities", info["activities"]),
+        "sampling_freq": rate,
+    }
+
+
 @router.post("/import")
 def start_import(
     body: dict,
@@ -38,9 +82,18 @@ def start_import(
     request: Request,
     project: str = Header(...),
 ):
-    dataset_id = (body or {}).get("dataset_id")
+    body = body or {}
+    dataset_id = body.get("dataset_id")
     if not dataset_id:
         raise HTTPException(400, "dataset_id is required")
+    try:
+        info = whar.describe(whar.get_config(dataset_id, CACHE_DIR))
+    except ValueError:
+        raise HTTPException(404, f"unknown dataset {dataset_id}")
+    try:
+        options = resolve_options(body, info)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     jwt = request.cookies.get("jwt")
     if not jwt:
         raise HTTPException(401, "missing jwt cookie")
@@ -58,9 +111,10 @@ def start_import(
         "subjects_done": 0,
         "subjects_total": None,
         "created_dataset_ids": [],
+        "options": options,
         "error": None,
     }
-    background_tasks.add_task(_run_import, job_id, dataset_id, project, jwt)
+    background_tasks.add_task(_run_import, job_id, dataset_id, project, jwt, options)
     return {"job_id": job_id}
 
 
@@ -72,7 +126,8 @@ def import_status(job_id: str):
     return job
 
 
-def _run_import(job_id: str, dataset_id: str, project: str, jwt: str):
+def _run_import(job_id: str, dataset_id: str, project: str, jwt: str, options: Optional[dict] = None):
+    options = options or {}
     job = _jobs[job_id]
     try:
         job["state"] = "downloading"
@@ -96,7 +151,9 @@ def _run_import(job_id: str, dataset_id: str, project: str, jwt: str):
         watcher = progress.DownloadWatcher(CACHE_DIR, on_bytes)
         watcher.start()
         try:
-            loaded = whar.preprocess_and_load(dataset_id, CACHE_DIR, on_tqdm=on_tqdm)
+            loaded = whar.preprocess_and_load(
+                dataset_id, CACHE_DIR, on_tqdm=on_tqdm, sampling_freq=options.get("sampling_freq")
+            )
         finally:
             watcher.stop()
 
@@ -110,6 +167,8 @@ def _run_import(job_id: str, dataset_id: str, project: str, jwt: str):
             loaded["session_df"],
             loaded["activity_df"],
             loaded["sampling_freq"],
+            channels=options.get("channels"),
+            activities=options.get("activities"),
         )
         subjects = conv["subjects"]
         job["subjects_total"] = len(subjects)

@@ -1,11 +1,6 @@
 FROM python:3.11-bookworm
 WORKDIR /app
 
-# Install the CPU build of torch first so pip does not pull the multi-GB CUDA
-# wheel when whar-datasets requires torch (mirrors the ml service Dockerfile).
-# Keep this version in sync with whar-datasets' torch pin.
-RUN pip install --no-cache-dir torch==2.10.0 --index-url https://download.pytorch.org/whl/cpu
-
 COPY requirements.txt requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 

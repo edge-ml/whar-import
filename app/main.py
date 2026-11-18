@@ -1,7 +1,7 @@
 """whar-import service: imports standard WHAR datasets into edge-ml.
 
-Runs isolated from the other services because whar_datasets pulls torch/
-playwright and version-pins that conflict with the ml service.
+Runs isolated from the other services because whar_datasets pulls playwright
+and dependency versions that conflict with the ml service.
 """
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

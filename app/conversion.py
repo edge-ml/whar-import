@@ -40,22 +40,41 @@ def build_conversion(
     activity_df: pd.DataFrame,
     sampling_freq: float,
     channels: Optional[List[str]] = None,
+    activities: Optional[List[str]] = None,
 ) -> dict:
     """Return {labeling_name, activities, subjects} where subjects maps
     subject_id -> {name, metaData, timeSeries, intervals}. `intervals` are
     {activity_name, start, end} (epoch-ms); they are mapped to label ids when
-    the dataset is pushed."""
+    the dataset is pushed.
+
+    `channels` and `activities` limit the import to those channels and to the
+    sessions of those activities (None: all)."""
+    available = infer_channels(sessions)
     if channels is None:
-        channels = infer_channels(sessions)
+        channels = available
+    else:
+        unknown = [c for c in channels if c not in available]
+        if unknown:
+            raise ValueError(f"unknown channels: {', '.join(unknown)}")
     if not channels:
         raise ValueError("no sensor channels found in sessions")
     if sampling_freq <= 0:
         raise ValueError(f"invalid sampling_freq: {sampling_freq}")
 
-    dt_ms = max(1, int(round(1000.0 / sampling_freq)))
+    # the exact sample period; times are rounded per sample, so that e.g. 30 Hz
+    # stays 30 Hz on the ms axis instead of becoming 1000/33
+    period_ms = 1000.0 / sampling_freq
     activity_name_by_id = dict(
         zip(activity_df["activity_id"].tolist(), activity_df["activity_name"].tolist())
     )
+    if activities is not None:
+        wanted = set(activities)
+        unknown = wanted - set(activity_name_by_id.values())
+        if unknown:
+            raise ValueError(f"unknown activities: {', '.join(sorted(unknown))}")
+        keep = {i for i, name in activity_name_by_id.items() if name in wanted}
+        session_df = session_df[session_df["activity_id"].astype(int).isin(keep)]
+        activity_df = activity_df[activity_df["activity_id"].astype(int).isin(keep)]
 
     subjects: Dict[int, dict] = {}
     for subject_id, sub in session_df.groupby("subject_id"):
@@ -69,7 +88,7 @@ def build_conversion(
             if sdf is None or len(sdf) == 0:
                 continue
             n = len(sdf)
-            times = cursor + np.arange(n, dtype=np.int64) * dt_ms
+            times = cursor + np.round(np.arange(n) * period_ms).astype(np.int64)
             for ch in channels:
                 col = np.asarray(sdf[ch].to_numpy(), dtype=np.float64)
                 ts_data[ch].extend([int(t), float(v)] for t, v in zip(times, col))
@@ -80,7 +99,7 @@ def build_conversion(
                     "end": int(times[-1]),
                 }
             )
-            cursor = int(times[-1]) + dt_ms
+            cursor = cursor + int(round(n * period_ms))
 
         if not intervals:  # subject had only empty sessions
             continue
@@ -91,6 +110,7 @@ def build_conversion(
                 "source": "whar",
                 "whar_id": dataset_name,
                 "subject_id": str(subject_id),
+                "sampling_freq": f"{sampling_freq:g}",
             },
             "timeSeries": [
                 {"name": ch, "unit": "", "data": ts_data[ch]} for ch in channels
